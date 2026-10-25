@@ -1,0 +1,17 @@
+# Private environment variables
+.env
+.env.*
+!.env.example
+
+# Local dependencies and build output
+node_modules/
+.nuxt/
+.output/
+.vercel/
+
+# Provider snapshots: local validation evidence only
+docs/arjum-samples.json
+docs/arjum-extra-samples.json
+
+data/
+*.log

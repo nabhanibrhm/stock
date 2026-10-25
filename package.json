@@ -1,0 +1,27 @@
+{
+  "name": "arus-swing",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/runtime.mjs dev",
+    "build": "node scripts/runtime.mjs build",
+    "preview": "node scripts/runtime.mjs preview",
+    "typecheck": "node scripts/runtime.mjs typecheck",
+    "test": "node scripts/runtime.mjs test",
+    "backtest": "node scripts/runtime.mjs backtest"
+  },
+  "dependencies": {
+    "nuxt": "^4.0.0",
+    "vue": "^3.5.0",
+    "@libsql/client": "^0.15.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "vue-tsc": "^3.0.0",
+    "tsx": "^4.20.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}
