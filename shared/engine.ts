@@ -1,6 +1,6 @@
-import type { Candle, Holding, Settings, Setup, TradePlan } from './types'
-export type { Candle, Holding, Settings, Setup, TradePlan } from './types'
-export const STRATEGY_VERSION = 'swing-eod-1.0.0'
+import type { Candle, Holding, Settings, Setup, TradePlan, UniverseAssessment } from './types'
+export type { Candle, Holding, Settings, Setup, TradePlan, UniverseAssessment } from './types'
+export const STRATEGY_VERSION = 'swing-eod-1.1.0'
 export const defaultSettings: Settings = { cash: 10_000_000, equity: 10_000_000, riskPct: 0.5, maxPositionPct: 20, maxTotalRiskPct: 2, buyFeePct: 0.15, sellFeePct: 0.25, slippagePct: 0.1, minDailyValue: 1_000_000_000, maxPositions: 5 }
 export const tickSize = (price: number): number => price < 200 ? 1 : price < 500 ? 2 : price < 2000 ? 5 : price < 5000 ? 10 : 25
 export function roundPrice(price: number, direction: 'up'|'down' = 'up'): number {
@@ -27,6 +27,64 @@ export function cleanHistory(history: Candle[], expectedDate: string): Candle[] 
     dates.add(c.date)
   }
   return rows
+}
+/** Data and liquidity admission only: a bearish IHSG does not make a stock ineligible. */
+export function assessHistoryEligibility(history: Candle[], index: Candle[], minDailyValue: number, expectedDate: string): UniverseAssessment {
+  if (!Number.isFinite(minDailyValue) || minDailyValue < 0) throw new Error('Invalid minimum daily value')
+  const result: UniverseAssessment = {eligible:false,reasonCodes:[],reasons:[],avgDailyValue:null,historySessions:0,asOf:null,missingSessions:null,valueEstimated:false}
+  const fail = (code: string, reason: string) => { result.reasonCodes.push(code); result.reasons.push(reason) }
+  let rows: Candle[] = [], market: Candle[] = []
+  let validHistory = true, validMarket = true
+  try { rows = cleanHistory(history,expectedDate) } catch { validHistory=false;fail('invalid_history','Data saham tidak valid atau duplikat') }
+  try { market = cleanHistory(index,expectedDate) } catch { validMarket=false;fail('invalid_index','Data IHSG tidak valid atau duplikat') }
+  result.historySessions=rows.length;result.asOf=rows.at(-1)?.date??null
+  if(validHistory){
+    if(rows.length<60)fail('insufficient_history',`Riwayat saham ${rows.length}/60 sesi minimum`)
+    if(rows.at(-1)?.date!==expectedDate)fail('stale_history','Data saham belum tersedia untuk tanggal observasi')
+    if(rows.at(-1)?.volume===0)fail('no_volume','Tidak ada volume pada sesi saham terakhir')
+    if(rows.length>=20){
+      const recent=rows.slice(-20)
+      result.valueEstimated=recent.some(c=>c.value===undefined)
+      result.avgDailyValue=mean(recent.map(c=>c.value??c.close*c.volume))
+      if(result.avgDailyValue<minDailyValue)fail('illiquid','Likuiditas di bawah batas rata-rata nilai transaksi 20 sesi')
+    }
+  }
+  if(validMarket){
+    if(market.length<60)fail('insufficient_index','Riwayat IHSG kurang dari 60 sesi; kelengkapan belum dapat diverifikasi')
+    if(market.at(-1)?.date!==expectedDate)fail('stale_index','Data IHSG belum tersedia untuk tanggal observasi')
+  }
+  if(validHistory&&validMarket&&market.length>=60){
+    const stockDates=new Set(rows.slice(-60).map(c=>c.date))
+    result.missingSessions=market.slice(-60).filter(c=>!stockDates.has(c.date)).length
+    if(result.missingSessions>0)fail('missing_sessions',`${result.missingSessions} sesi saham hilang dibanding 60 sesi IHSG`)
+  }
+  result.eligible=result.reasonCodes.length===0
+  if(result.eligible)result.reasons.push('Lolos data terbaru, minimal 60 sesi selaras IHSG, dan likuiditas 20 sesi')
+  if(result.valueEstimated)result.reasons.push('Sebagian nilai transaksi diperkirakan dari close × volume')
+  return result
+}
+export function assessUniverse(histories: Record<string,Candle[]>, index: Candle[], settings: Pick<Settings,'minDailyValue'>, expectedDate: string): Record<string,UniverseAssessment> {
+  return Object.fromEntries(Object.keys(histories).sort().map(symbol=>[symbol,assessHistoryEligibility(histories[symbol]!,index,settings.minDailyValue,expectedDate)]))
+}
+/** Uncalibrated ordering score, never a win probability. Call only on eligible history. */
+export function rankSetup(history: Candle[], index: Candle[], expectedDate: string): {score:number;rankingReasons:string[]} {
+  const rows=cleanHistory(history,expectedDate),market=cleanHistory(index,expectedDate)
+  if(rows.length<60||market.length<60)throw new Error('Ranking requires 60 sessions')
+  const last=rows.at(-1)!, marketLast=market.at(-1)!
+  const stockReturn=100*(last.close/rows.at(-21)!.close-1)
+  const indexReturn=100*(marketLast.close/market.at(-21)!.close-1)
+  const relativeStrength=stockReturn-indexReturn
+  const priorVolume=mean(rows.slice(-21,-1).map(c=>c.volume))
+  const relativeVolume=priorVolume>0?last.volume/priorVolume:0
+  const trendDistance=100*(last.close/mean(rows.slice(-50).map(c=>c.close))-1)
+  const clip=(n:number,low:number,high:number)=>Math.max(low,Math.min(high,n))
+  const score=cashRound(2*clip(relativeStrength,-20,20)+10*(clip(relativeVolume,0,5)-1)+clip(trendDistance,-20,20))
+  return {score,rankingReasons:[
+    `Kekuatan relatif 20 sesi vs IHSG: ${relativeStrength.toFixed(2)} poin persentase (bobot 2; batas ±20)`,
+    `Volume sesi terakhir / rata-rata 20 sesi sebelumnya: ${relativeVolume.toFixed(2)}× (bobot 10 × (rasio−1); rasio dibatasi 0–5)`,
+    `Jarak close dari SMA50: ${trendDistance.toFixed(2)}% (bobot 1; batas ±20)`,
+    'Skor heuristik untuk urutan alokasi; bukan probabilitas keuntungan'
+  ]}
 }
 export function evaluateSetup(history: Candle[], index: Candle[], expectedDate: string): Setup {
   let rows: Candle[], market: Candle[]
@@ -71,7 +129,7 @@ export function buildPlans(histories: Record<string,Candle[]>, index: Candle[], 
   for (const h of holdings) {
     if (holdingMap.has(h.symbol) || !h.symbol || !Number.isFinite(h.shares) || !Number.isInteger(h.shares) || h.shares <= 0 || !Number.isFinite(h.entryPrice) || h.entryPrice<=0 || (h.stop!==undefined && (!Number.isFinite(h.stop)||h.stop<=0))) throw new Error('Invalid or duplicate holding')
     if (h.target !== undefined && (!Number.isFinite(h.target) || h.target <= 0)) throw new Error('Invalid holding target')
-    if (h.openedDate !== undefined && (!validDate(h.openedDate) || h.openedDate > expectedDate)) throw new Error('Invalid holding opening date')
+    if (h.openedDate !== undefined && !validDate(h.openedDate)) throw new Error('Invalid holding opening date')
     holdingMap.set(h.symbol,h)
   }
   let availableCash=settings.cash, availableRisk=settings.equity*settings.maxTotalRiskPct/100, slots=settings.maxPositions-holdings.length
@@ -83,15 +141,29 @@ export function buildPlans(histories: Record<string,Candle[]>, index: Candle[], 
     const recovery=fresh && h.stop!==undefined ? Math.min(price,h.stop)*(1-settings.slippagePct/100)*(1-settings.sellFeePct/100) : 0
     availableRisk-=h.shares*Math.max(0,price-recovery)
   }
-  return [...new Set([...Object.keys(histories),...holdingMap.keys()])].sort().map(symbol=>{
-    const h=holdingMap.get(symbol), raw=histories[symbol]??[]
+  const candidates=[...new Set([...Object.keys(histories),...holdingMap.keys()])].map(symbol=>{
+    const raw=histories[symbol]??[],h=holdingMap.get(symbol)
+    const assessment=assessHistoryEligibility(raw,index,settings.minDailyValue,expectedDate)
     const setup=evaluateSetup(raw,index,expectedDate)
-    const base: TradePlan={symbol,action:'WAIT',reasons:[...setup.reasons],entry:setup.entry,stop:setup.stop,target:setup.target,lots:0,estimatedCost:0,plannedRisk:0,asOf:setup.asOf,expiry:'NEXT_TRADING_SESSION_ONLY',strategyVersion:STRATEGY_VERSION,setup:setup.setup}
+    const ranking=!h&&assessment.eligible&&setup.action==='BUY'?rankSetup(raw,index,expectedDate):null
+    return {symbol,raw,h,assessment,setup,ranking}
+  })
+  // Held-position review does not release cash. Only qualified unheld setups compete
+  // for new allocation; sort before sizing so scarce capital follows the ranking.
+  candidates.sort((a,b)=>{
+    const groupA=a.h?0:a.ranking?1:2,groupB=b.h?0:b.ranking?1:2
+    return groupA-groupB || (a.ranking&&b.ranking?b.ranking.score-a.ranking.score:0) || a.symbol.localeCompare(b.symbol)
+  })
+  let setupRank=0
+  return candidates.map(({symbol,h,raw,assessment,setup,ranking})=>{
+    const base: TradePlan={symbol,action:'WAIT',reasons:[...setup.reasons],entry:setup.entry,stop:setup.stop,target:setup.target,lots:0,estimatedCost:0,plannedRisk:0,asOf:setup.asOf,expiry:'NEXT_TRADING_SESSION_ONLY',strategyVersion:STRATEGY_VERSION,setup:setup.setup,
+      rank:ranking?++setupRank:null,score:ranking?.score??null,rankingReasons:ranking?.rankingReasons??[],avgDailyValue:assessment.avgDailyValue,historySessions:assessment.historySessions,eligible:assessment.eligible}
     let rows: Candle[]=[]
     try {rows=cleanHistory(raw,expectedDate)} catch {return {...base,action:h?'HOLD':'WAIT',entry:h?h.entryPrice:base.entry,stop:h?h.stop??null:base.stop,target:h?h.target??null:base.target,lots:h?h.shares/100:0,reasons:['Data tidak valid; keputusan transaksi diblokir',...(h&&h.target===undefined?['Target belum diisi; exit target tidak dipantau']:[])]}}
     const last=rows.at(-1)
     if(h){
       base.action='HOLD';base.entry=h.entryPrice;base.stop=h.stop??null;base.target=h.target??null;base.lots=h.shares/100;base.estimatedCost=0;base.reasons=[]
+      if(h.openedDate && h.openedDate>expectedDate){base.action='WAIT';base.reasons=['Posisi dibuka setelah sesi data terakhir; tunggu data sesi pembelian selesai'];return base}
       if(!last || last.date!==expectedDate || rows.length<60){base.reasons=['Data posisi belum lengkap; keputusan jual diblokir'];return base}
       let market: Candle[]=[]
       try {market=cleanHistory(index,expectedDate)} catch {base.reasons=['Data IHSG tidak valid; keputusan jual diblokir'];return base}
@@ -112,9 +184,9 @@ export function buildPlans(histories: Record<string,Candle[]>, index: Candle[], 
       if(h.stop===undefined)base.reasons.push('Stop belum diisi; seluruh nilai posisi dicadangkan sebagai risiko')
       return base
     }
+    // Report universe admission separately, even when the market regime also blocks entry.
+    if(!assessment.eligible){base.reasons=[...assessment.reasons,...setup.reasons];return base}
     if(setup.action!=='BUY')return base
-    const dailyValue=mean(rows.slice(-20).map(c=>c.value??c.close*c.volume))
-    if(dailyValue<settings.minDailyValue){base.reasons=['Likuiditas di bawah batas rata-rata 20 sesi'];return base}
     if(slots<=0){base.reasons=['Batas jumlah posisi tercapai'];return base}
     const sized=sizePosition(setup.entry!,setup.stop!,mean(rows.slice(-20).map(c=>c.volume)),settings,availableCash,availableRisk)
     if(!sized.lots){base.reasons=['Kas, batas posisi, atau anggaran risiko tidak cukup untuk satu lot'];return base}

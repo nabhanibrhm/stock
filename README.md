@@ -24,14 +24,14 @@ The backtest reads the validation snapshots already saved in `docs/arjum-samples
 
 ## Current scope
 
-- Four-symbol pilot universe: BBCA, BBRI, TLKM, ANTM; IHSG benchmark.
-- Market history is cached in `data/arus.db`; refresh requests fetch five symbols atomically. A failure keeps the prior complete cache.
-- Refresh limited to once per hour and four runs per WIB day (20 API requests reserved). Failed runs consume local budget conservatively. Restarts do not reset this budget.
+- Broad discovery through the Arjum stock catalogue (up to 25 pages), with up to 60 stocks selected by latest-session turnover proxy. Held symbols take priority. IHSG is the benchmark. The UI discloses partial scan coverage.
+- Market history is cached in `data/arus.db`. Catalogue/index failures keep the previous snapshot. Individual history failures are explicitly marked and cannot produce actionable signals; stale rows are not reused silently.
+- Refresh limited to once per hour, with a 400-request WIB daily budget. Each scan reserves up to 86 requests (25 catalogue pages, IHSG, 60 stocks); reservations are conservative and not refunded. One migration scan can immediately replace the legacy four-stock cache without resetting accumulated usage. Restarts do not reset the budget.
 - Saved capital/risk settings and holdings persist in SQLite. Capital is available cash; equity includes cash and marked positions, entered by the user.
 - BUY is a conditional next-session stop-entry, not an instruction to buy immediately. Skip opening gaps over 3%; recalculate position size for actual fills. Orders expire after one session.
 - Positions are rounded down to 100-share lots, with fee/slippage allowances, liquidity participation, cash, position and aggregate risk limits. Missing stops reserve full held value as risk.
 - Stops/trend exits may occur earlier than three sessions. Time exit targets the 15th held session's open when an opening date is supplied.
-- All signal logic is deterministic, versioned and shared with the backtester. Symbol priority is alphabetical, not an implied performance ranking.
+- All signal logic is deterministic, versioned and shared with the backtester. Qualifying setups are ranked before capital allocation using relative strength, relative volume and trend distance. Scores are uncalibrated ordering heuristics, not win probabilities; ties use alphabetical order.
 
 ## Research limitations
 
@@ -39,7 +39,7 @@ Current sample checks are not full market-data certification. Corporate-action m
 
 Signals require the expected completed weekday session at/after 18:00 WIB; before then they require the preceding weekday. Exchange holidays are not yet integrated, so holiday dates conservatively block signals. Missing and stale records block trade decisions. Zero-volume or locked candles cannot be assumed executable in simulation. A stop is not a guaranteed maximum loss.
 
-Global/yield data, news catalysts, full exchange breadth, scheduled briefs and paper-trade journaling are future phases. No fabricated data is displayed for these sections.
+Global/yield data, news catalysts, full exchange breadth and scheduled briefs are future phases. An actual-fill journal, in-app exit monitoring, and on-demand broker/financial research are now available; see [holdings and research](docs/holdings-and-research.md). No fabricated data is displayed for unavailable sections.
 
 ## Vercel preparation (not deployed)
 
@@ -48,4 +48,9 @@ Set ARJUM_API_KEY, DATABASE_URL and DATABASE_AUTH_TOKEN through the deployment e
 Nuxt detects the Vercel build environment. Scheduling/deployment configuration is not included in this phase. Import/recreate research reports separately on hosted storage; local backtest files are not automatically deployed.
 
 Zero balances: cash and equity can both be 0. The planner allocates no new buys in that state. Cash must remain no greater than total equity; negative values are rejected. Backtest scenarios still require positive starting capital to calculate meaningful returns.
+
+
+See docs/universe-expansion.md for coverage, ranking formula and the distinction between current scanning and the older four-stock backtest.
+
+See [future priorities](docs/future-priorities.md) for the Arjum enhancement history, optional local AI, and the LLM Trading Lab integration assessment.
 

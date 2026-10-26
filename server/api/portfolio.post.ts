@@ -1,9 +1,9 @@
-import { dashboard } from '../services/market'
+import { dashboard, allowedSymbols } from '../services/market'
 import { validatePortfolio } from '../services/validation'
-import { writeRecord } from '../services/store'
+import { savePortfolio } from '../services/portfolio'
 export default defineEventHandler(async event=>{
  let portfolio, result
- try {portfolio=validatePortfolio(await readBody(event));result=await dashboard(portfolio)}catch(e){throw createError({statusCode:400,statusMessage:e instanceof Error?e.message:'Invalid request'})}
- await writeRecord('portfolio',portfolio)
+ try {portfolio=validatePortfolio(await readBody(event), await allowedSymbols());result=await dashboard(portfolio);await savePortfolio(portfolio)}catch(e){throw createError({statusCode:400,statusMessage:e instanceof Error?e.message:'Invalid request'})}
  return result
 })
+

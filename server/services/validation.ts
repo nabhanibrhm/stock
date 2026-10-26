@@ -12,7 +12,7 @@ export function validateCandles(input: unknown): Candle[] {
   return { date:r.date,open:r.open,high:r.high,low:r.low,close:r.close,volume:r.volume,...(Number.isFinite(r.value)?{value:r.value}:{}) }
  }).sort((a,b)=>a.date.localeCompare(b.date))
 }
-export function validatePortfolio(body: any): {settings:Settings,holdings:Holding[]} {
+export function validatePortfolio(body: any, allowed: readonly string[] = SYMBOLS): {settings:Settings,holdings:Holding[]} {
  if (!body || typeof body !== 'object' || !body.settings || !Array.isArray(body.holdings)) throw new Error('Pengaturan dan posisi diperlukan.')
  const settings = {...defaultSettings} as Settings
  for (const key of Object.keys(defaultSettings) as (keyof Settings)[]) {
@@ -30,13 +30,14 @@ export function validatePortfolio(body: any): {settings:Settings,holdings:Holdin
  if (settings.maxPositions < 1 || settings.maxPositions > 20 || !Number.isInteger(settings.maxPositions)) throw new Error('Maksimal posisi harus bilangan bulat antara 1 dan 20.')
  const seen=new Set<string>()
  const holdings:Holding[]=body.holdings.map((h:any)=>{
-  if(!h || !SYMBOLS.includes(h.symbol) || seen.has(h.symbol) || !Number.isInteger(h.shares) || h.shares<=0 || h.shares>1e9 || !Number.isFinite(h.entryPrice) || h.entryPrice<=0 || (h.stop!=null && (!Number.isFinite(h.stop)||h.stop<=0))) throw new Error('Posisi tidak valid. Gunakan saham universe, jumlah lembar positif, dan simbol unik.')
+  if(!h || !allowed.includes(h.symbol) || seen.has(h.symbol) || !Number.isInteger(h.shares) || h.shares<=0 || h.shares>1e9 || !Number.isFinite(h.entryPrice) || h.entryPrice<=0 || (h.stop!=null && (!Number.isFinite(h.stop)||h.stop<=0))) throw new Error('Posisi tidak valid. Gunakan saham universe, jumlah lembar positif, dan simbol unik.')
   if(h.openedDate!=null && (typeof h.openedDate!=='string' || !/^\d{4}-\d{2}-\d{2}$/.test(h.openedDate) || !Number.isFinite(Date.parse(h.openedDate)) || new Date(h.openedDate).toISOString().slice(0,10)!==h.openedDate)) throw new Error('Tanggal beli tidak valid.')
   if(h.target!=null && (!Number.isFinite(h.target)||h.target<=0)) throw new Error('Target posisi tidak valid.')
   seen.add(h.symbol); return {symbol:h.symbol,shares:h.shares,entryPrice:h.entryPrice,...(h.stop!=null?{stop:h.stop}:{}),...(h.target!=null?{target:h.target}:{}),...(h.openedDate?{openedDate:h.openedDate}:{})}
  })
  return {settings,holdings}
 }
+
 
 
 

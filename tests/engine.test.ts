@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {buildPlans,cleanHistory,defaultSettings,evaluateSetup,roundPrice,sizePosition} from '../shared/engine'
+import {assessHistoryEligibility,assessUniverse,buildPlans,cleanHistory,defaultSettings,evaluateSetup,rankSetup,roundPrice,sizePosition,STRATEGY_VERSION} from '../shared/engine'
 import type {Candle,Settings} from '../shared/types'
 function candles(): Candle[]{
  const result:Candle[]=[]; const d=new Date('2025-01-01T00:00:00Z')
@@ -130,4 +130,67 @@ test('missing targets are disclosed and invalid targets are rejected',()=>{
  assert.equal(plan.target,null)
  assert.ok(plan.reasons.some(r=>r.includes('exit target tidak dipantau')))
  for(const target of [0,-1,NaN,Infinity])assert.throws(()=>buildPlans({AAAA:rows},rows,[{...h,target}],settings,date))
+})
+test('higher-ranked qualifying setup receives scarce position capacity before alphabetically earlier symbols',()=>{
+ const strong=rows.map((r,i)=>i===rows.length-1?{...r,volume:r.volume*3,value:r.value!*3}:r)
+ const plans=buildPlans({AAAA:rows,ZZZZ:strong},rows,[],{...settings,maxPositions:1},date)
+ assert.equal(plans[0]!.symbol,'ZZZZ')
+ assert.equal(plans[0]!.action,'BUY')
+ assert.equal(plans[0]!.rank,1)
+ assert.equal(plans[1]!.symbol,'AAAA')
+ assert.equal(plans[1]!.action,'WAIT')
+ assert.equal(plans[1]!.rank,2)
+ assert.ok(plans[0]!.score!>plans[1]!.score!)
+ assert.ok(plans[0]!.rankingReasons!.some(r=>r.includes('bukan probabilitas')))
+ assert.equal(plans[0]!.strategyVersion,'swing-eod-1.1.0')
+})
+test('equal scores tie by symbol independently of input insertion order',()=>{
+ const plans=buildPlans({ZZZZ:rows,AAAA:rows},rows,[],{...settings,maxPositions:1},date)
+ assert.equal(plans[0]!.symbol,'AAAA')
+ assert.equal(plans[0]!.action,'BUY')
+ assert.equal(plans[1]!.rank,2)
+ assert.equal(plans[0]!.score,plans[1]!.score)
+})
+test('history and liquidity eligibility are diagnosed independently of bearish IHSG setup filter',()=>{
+ const bearish=rows.map((r,i)=>{const close=2000-i*5;return {...r,open:close,close,high:close+5,low:close-5}})
+ const illiquid=rows.map(r=>({...r,volume:100,value:100*r.close}))
+ const universe=assessUniverse({GOOD:rows,THIN:illiquid,SHORT:rows.slice(-30)},bearish,{minDailyValue:1_000_000_000},date)
+ assert.equal(universe.GOOD!.eligible,true)
+ assert.equal(universe.THIN!.eligible,false)
+ assert.ok(universe.THIN!.reasonCodes.includes('illiquid'))
+ assert.equal(universe.SHORT!.historySessions,30)
+ assert.ok(universe.SHORT!.reasonCodes.includes('insufficient_history'))
+ const plans=buildPlans({GOOD:rows,THIN:illiquid,SHORT:rows.slice(-30)},bearish,[],defaultSettings,date)
+ assert.ok(plans.every(p=>p.action==='WAIT'))
+ assert.equal(plans.find(p=>p.symbol==='GOOD')!.eligible,true)
+ assert.equal(plans.find(p=>p.symbol==='GOOD')!.rank,null)
+ assert.ok(plans.find(p=>p.symbol==='THIN')!.reasons.some(r=>r.includes('Likuiditas')))
+ assert.ok(plans.find(p=>p.symbol==='SHORT')!.reasons.some(r=>r.includes('30/60')))
+})
+test('eligibility rejects stale, invalid, missing-session and zero-volume data with explicit codes',()=>{
+ assert.ok(assessHistoryEligibility(rows.slice(0,-1),rows,0,date).reasonCodes.includes('stale_history'))
+ assert.ok(assessHistoryEligibility([...rows,rows.at(-1)!],rows,0,date).reasonCodes.includes('invalid_history'))
+ assert.ok(assessHistoryEligibility(rows.filter((_,i)=>i!==50),rows,0,date).reasonCodes.includes('missing_sessions'))
+ assert.ok(assessHistoryEligibility(rows.map((r,i)=>i===79?{...r,volume:0}:r),rows,0,date).reasonCodes.includes('no_volume'))
+ assert.ok(assessHistoryEligibility(rows,[],0,date).reasonCodes.includes('insufficient_index'))
+ assert.throws(()=>assessHistoryEligibility(rows,rows,-1,date))
+})
+test('eligibility metrics and ranking use only observations available on the specified date',()=>{
+ const future={...rows.at(-1)!,date:'2099-01-01',volume:9e12,value:9e15}
+ assert.deepEqual(assessHistoryEligibility([...rows,future],[...rows,future],0,date),assessHistoryEligibility(rows,rows,0,date))
+ assert.deepEqual(rankSetup([...rows,future],[...rows,future],date),rankSetup(rows,rows,date))
+ const a=buildPlans({AAAA:rows},rows,[],settings,date)
+ const b=buildPlans({AAAA:[...rows,future]},[...rows,future],[],settings,date)
+ assert.deepEqual(a,b)
+ assert.equal(a[0]!.historySessions,80)
+ const estimated=assessHistoryEligibility(rows.map(({value,...r})=>r),rows,0,date)
+ assert.equal(estimated.valueEstimated,true)
+ assert.ok(estimated.avgDailyValue!>0)
+ assert.equal(STRATEGY_VERSION,'swing-eod-1.1.0')
+})
+test('a newly recorded fill after the last completed session waits for its own session data',()=>{
+ const h={symbol:'AAAA',shares:100,entryPrice:1000,stop:990,openedDate:'2099-01-01'}
+ const plan=buildPlans({AAAA:rows},rows,[h],settings,date)[0]!
+ assert.equal(plan.action,'WAIT')
+ assert.ok(plan.reasons.some(r=>r.includes('setelah sesi data terakhir')))
 })

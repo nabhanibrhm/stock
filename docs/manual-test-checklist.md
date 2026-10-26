@@ -22,7 +22,7 @@ Prepared 25 October 2026, Asia/Jakarta. These are manual checks to perform; unch
 
 ## Holdings (temporary paper examples only)
 
-- [ ] Add a supported symbol (BBCA, BBRI, TLKM or ANTM), number of shares, entry price, stop, target and purchase date.
+- [ ] Add a supported symbol from the scanned-stock dropdown, number of shares, entry price, stop, target and purchase date.
 - [ ] Save and reload. Verify stop, target and date survive.
 - [ ] Check the HOLD/SELL explanation. SELL is a review signal, not evidence an order filled.
 - [ ] Check missing stop/target warnings where applicable; unknown stop reserves the entire held value as risk.
@@ -32,7 +32,7 @@ Prepared 25 October 2026, Asia/Jakarta. These are manual checks to perform; unch
 
 - [ ] Inspect the observation date and provider/source status before reading plans.
 - [ ] Click refresh once; expect a complete saved snapshot or a visible error with prior cache retained.
-- [ ] Refresh immediately again; expect the one-hour cooldown. Budget is four refresh attempts per WIB day, each reserving five requests.
+- [ ] Refresh immediately again; expect the one-hour cooldown. The daily budget is 400 requests; each broad scan reserves up to 86 requests conservatively.
 - [ ] Compare displayed dates and at least one closing price against an independent broker/exchange source. This reconciliation is still pending.
 - [ ] Verify insufficient or stale data produces blocked decisions rather than invented prices.
 - [ ] WAIT is valid. More cash must not force BUY. A small balance may not support even one lot under position/risk limits.
@@ -52,7 +52,7 @@ Prepared 25 October 2026, Asia/Jakarta. These are manual checks to perform; unch
 - [ ] Treat this as a software observation/paper-trading trial. Do not use it as the sole basis for a real-money order.
 - [ ] At market open the strategy uses completed prior-session data (expected Friday 23 October). It is not a live intraday signal feed.
 - [ ] Check source dates carefully after refresh: provider may expose an unfinished Monday candle. The engine filters candles after the expected completed date; a source label may show newer data. Do not interpret this as an intraday recommendation.
-- [ ] Current observed four-stock state is WAIT; reevaluate the actual loaded snapshot rather than assuming this remains true.
+- [ ] Current observed 60-stock state is WAIT; reevaluate the actual loaded snapshot rather than assuming this remains true.
 - [ ] Log signals, intended entries, hypothetical fills, fees and exits manually. Do not invent executions when no trigger was reached or liquidity is unavailable.
 - [ ] After 18:00 WIB, refresh and verify Monday's completed data is actually present. The 18:00 cutoff is an app assumption, not a provider freshness guarantee. Missing data means wait.
 - [ ] Record any error with the field values, observation date and message; never include the API key.
@@ -75,3 +75,24 @@ npm run build
 IDX trading hours: https://www.idx.id/en/products-services/trading-hours-and-mechanism/
 IDX holiday calendar: https://www.idx.id/id/berita/jadwal-libur-bursa
 Research findings: phase-4-review.md
+
+## Expanded universe checks (26 October 2026)
+
+- [ ] Confirm discovered / selected / scanned / eligible / qualifying counts are distinct.
+- [ ] Search for a newly included symbol such as BMRI or GOTO; verify a plan row appears.
+- [ ] Use Setup lolos filter: zero rows is valid when IHSG blocks all entries.
+- [ ] Increase the liquidity threshold, calculate, and verify fewer stocks pass eligibility; restore settings afterward.
+- [ ] Check pagination and holdings choices cover the scanned universe.
+- [ ] A heuristic ranking score must never appear as a win percentage. Existing backtest covers the older four-stock universe and version.
+
+# Holdings and research additions (2026-10-26)
+
+- Open Portofolio: confirm empty positions show an explanation, and fees are labeled total rupiah.
+- In a separate test database, record a buy then a partial sell. Verify fees, remaining shares, cash, and realized P/L; retry the same request ID and verify no duplicate.
+- Verify an older settings form cannot overwrite a newly recorded fill. Stop/target and risk edits should still work.
+- With a test holding and fresh complete data, verify triggered exits create one alert per unchanged event. Acknowledge and refresh: no duplicate alert. Stale/missing data must show WAIT with no new actionable alert.
+- Open Riset saham and select BBCA: cache loads without a provider refresh. Verify dated broker rows, accumulation coverage, bank-specific financial explanation and publication/unit limitations.
+- Select an uncached stock: unavailable states are explicit. Ambil data Arjum should load within the shared quota; repeated same-hour requests reuse cache.
+- Research must not change the trading signal/ranking. Historical alerts must not be presented as current orders.
+- No actual user trades were recorded during implementation verification. See holdings-and-research.md for scope and limitations.
+
