@@ -1,11 +1,12 @@
 import type { Candle, Holding, Settings, TradePlan } from './types'
 import { cleanHistory } from './engine'
+import { holdingSchedule,isTradingSession,type CalendarStatus } from './calendar'
 
-export interface TradeInput { id:string; symbol:string; side:'BUY'|'SELL'; date:string; shares:number; price:number; fee:number; stop?:number; target?:number }
+export interface TradeInput { id:string; symbol:string; side:'BUY'|'SELL'; date:string; shares:number; price:number; fee:number; stop?:number; target?:number;holdingSessions?:number }
 export interface JournalTrade extends TradeInput { recordedAt:string; gross:number; cashDelta:number; realizedPnl:number|null; basisKnown:boolean }
 export interface JournalState { trades:JournalTrade[]; basis:Record<string,{shares:number;entryPrice:number;cost:number|null}> }
 export interface Portfolio { settings:Settings; holdings:Holding[] }
-export interface PositionMonitor { symbol:string; action:'HOLD'|'SELL'|'WAIT'; reasons:string[]; asOf:string|null; price:number|null; shares:number; estimatedGross:number|null; estimatedFees:number|null; estimatedNet:number|null; strategyVersion:string; expiry:string; actionable:boolean }
+export interface PositionMonitor { symbol:string; action:'HOLD'|'SELL'|'WAIT'; reasons:string[]; asOf:string|null; price:number|null; shares:number; estimatedGross:number|null; estimatedFees:number|null; estimatedNet:number|null; strategyVersion:string; expiry:string; actionable:boolean;holdingSessions:number;heldSessions:number|null;plannedExitDate:string|null;calendarStatus:CalendarStatus }
 export interface ExitAlert { id:string;symbol:string;asOf:string;createdAt:string;acknowledgedAt:string|null;reasons:string[];shares:number;estimatedNet:number|null;strategyVersion:string;expiry:string }
 const money=(n:number)=>Math.round(n*100)/100
 const validDate=(s:unknown):s is string=>typeof s==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(s)&&Number.isFinite(Date.parse(s))&&new Date(s).toISOString().slice(0,10)===s
@@ -13,17 +14,19 @@ export function validateTrade(input:any,allowed:readonly string[],today:string):
  if(!input||typeof input!=='object'||typeof input.id!=='string'||!/^[A-Za-z0-9_-]{8,80}$/.test(input.id))throw new Error('ID transaksi tidak valid.')
  if(!allowed.includes(input.symbol)||!['BUY','SELL'].includes(input.side))throw new Error('Saham atau jenis transaksi tidak valid.')
  if(!validDate(input.date)||input.date>today)throw new Error('Tanggal transaksi harus valid dan tidak di masa depan.')
+ if(isTradingSession(input.date)===false)throw new Error('Tanggal transaksi bukan sesi bursa.')
  if(!Number.isSafeInteger(input.shares)||input.shares<=0||input.shares>1e9||typeof input.price!=='number'||!Number.isFinite(input.price)||input.price<=0||input.price>1e9)throw new Error('Jumlah lembar dan harga transaksi harus positif.')
  const gross=input.shares*input.price
  if(gross>1e12||typeof input.fee!=='number'||!Number.isFinite(input.fee)||input.fee<0||input.fee>gross)throw new Error('Nilai atau biaya transaksi tidak valid.')
  for(const field of ['stop','target'])if(input[field]!=null&&(typeof input[field]!=='number'||!Number.isFinite(input[field])||input[field]<=0||input[field]>1e9))throw new Error('Stop atau target tidak valid.')
  if(input.stop!=null&&input.target!=null&&input.stop>=input.target)throw new Error('Target harus di atas stop.')
- return {id:input.id,symbol:input.symbol,side:input.side,date:input.date,shares:input.shares,price:input.price,fee:money(input.fee),...(input.stop!=null?{stop:input.stop}:{}),...(input.target!=null?{target:input.target}:{})}
+ if(input.holdingSessions!=null&&(!Number.isInteger(input.holdingSessions)||input.holdingSessions<3||input.holdingSessions>15))throw new Error('Lama pegang harus 3–15 sesi bursa.')
+ return {id:input.id,symbol:input.symbol,side:input.side,date:input.date,shares:input.shares,price:input.price,fee:money(input.fee),...(input.stop!=null?{stop:input.stop}:{}),...(input.target!=null?{target:input.target}:{}),...(input.holdingSessions!=null?{holdingSessions:input.holdingSessions}:{})}
 }
 export function applyTrade(portfolio:Portfolio,state:JournalState,trade:TradeInput,marks:Record<string,number>,now:string):{portfolio:Portfolio;state:JournalState;duplicate:boolean} {
  const previous=state.trades.find(t=>t.id===trade.id)
  if(previous){
-  const fields:(keyof TradeInput)[]=['id','symbol','side','date','shares','price','fee','stop','target']
+  const fields:(keyof TradeInput)[]=['id','symbol','side','date','shares','price','fee','stop','target','holdingSessions']
   if(fields.some(k=>previous[k]!==trade[k]))throw new Error('ID transaksi sudah dipakai untuk transaksi berbeda.')
   return {portfolio,state,duplicate:true}
  }
@@ -40,7 +43,7 @@ export function applyTrade(portfolio:Portfolio,state:JournalState,trade:TradeInp
   if(portfolio.settings.cash+cashDelta<0)throw new Error('Dana tersedia tidak cukup untuk mencatat pembelian beserta biaya.')
   const shares=(existing?.shares??0)+trade.shares
   const entryPrice=((existing?.entryPrice??0)*(existing?.shares??0)+gross)/shares
-  const holding:Holding={...(existing??{}),symbol:trade.symbol,shares,entryPrice,...(!existing?{openedDate:trade.date}:{}),...(trade.stop!==undefined?{stop:trade.stop}:{}),...(trade.target!==undefined?{target:trade.target}:{})}
+  const holding:Holding={...(existing??{}),symbol:trade.symbol,shares,entryPrice,holdingSessions:existing?existing.holdingSessions??15:trade.holdingSessions??portfolio.settings.holdingSessions??15,...(!existing?{openedDate:trade.date}:{}),...(trade.stop!==undefined?{stop:trade.stop}:{}),...(trade.target!==undefined?{target:trade.target}:{})}
   if(existing)holdings.splice(holdings.indexOf(existing),1,holding);else holdings.push(holding)
   const cost=!existing?gross+trade.fee:existingCost!==null?existingCost+gross+trade.fee:null
   basis[trade.symbol]={shares,entryPrice,cost};basisKnown=cost!==null
@@ -68,7 +71,8 @@ export function monitorPositions(holdings:Holding[],plans:TradePlan[],histories:
   const fees=gross===null?null:money(gross*settings.sellFeePct/100)
   const reasons=blocked?[...(plan?.reasons??[]),'Data belum cukup/terbaru; instruksi exit diblokir.']:[...plan!.reasons]
   if(h.openedDate===last?.date)reasons.push('OHLC tanggal beli mencakup seluruh sesi; sentuhan stop/target bisa terjadi sebelum pembelian. Verifikasi waktu fill.')
-  return {symbol:h.symbol,action:blocked?'WAIT':plan!.action==='SELL'?'SELL':'HOLD',reasons,asOf:last?.date??null,price,shares:h.shares,estimatedGross:gross,estimatedFees:fees,estimatedNet:gross===null?null:money(gross-fees!),strategyVersion:plan?.strategyVersion??'unavailable',expiry:plan?.expiry??'UNAVAILABLE',actionable:!blocked&&plan!.action==='SELL'}
+  const schedule=holdingSchedule(h.openedDate,h.holdingSessions??15,expected)
+  return {symbol:h.symbol,action:blocked?'WAIT':plan!.action==='SELL'?'SELL':'HOLD',reasons,asOf:last?.date??null,price,shares:h.shares,estimatedGross:gross,estimatedFees:fees,estimatedNet:gross===null?null:money(gross-fees!),strategyVersion:plan?.strategyVersion??'unavailable',expiry:plan?.expiry??'UNAVAILABLE',actionable:!blocked&&plan!.action==='SELL',...schedule}
  })
 }
 export function mergeExitAlerts(existing:ExitAlert[],monitors:PositionMonitor[],now:string):ExitAlert[]{

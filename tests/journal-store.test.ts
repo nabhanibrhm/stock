@@ -14,7 +14,7 @@ test('journal stores fills and portfolio atomically and retries do not duplicate
   await store.writeRecord('portfolio',{settings:{...defaultSettings,cash:1000000,equity:1000000},holdings:[]})
   await store.writeRecord('market',{histories:{BBCA:[]},index:[],fetchedAt:'',origin:'test'})
   const {recordTrade,getJournal}=await import('../server/services/journal')
-  const fill={id:'durable-fill-001',symbol:'BBCA',side:'BUY',date:'2026-01-01',shares:100,price:1000,fee:150}
+  const fill={id:'durable-fill-001',symbol:'BBCA',side:'BUY',date:'2026-01-02',shares:100,price:1000,fee:150}
   await recordTrade(fill)
   await recordTrade(fill)
   let data=await getJournal()

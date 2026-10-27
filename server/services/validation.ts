@@ -16,7 +16,7 @@ export function validatePortfolio(body: any, allowed: readonly string[] = SYMBOL
  if (!body || typeof body !== 'object' || !body.settings || !Array.isArray(body.holdings)) throw new Error('Pengaturan dan posisi diperlukan.')
  const settings = {...defaultSettings} as Settings
  for (const key of Object.keys(defaultSettings) as (keyof Settings)[]) {
-  const value=body.settings[key]
+  const value=key==='holdingSessions'?body.settings[key]??15:body.settings[key]
   if(typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1e12) throw new Error('Nilai pengaturan tidak valid: '+key)
   ;(settings as any)[key]=value
  }
@@ -28,12 +28,14 @@ export function validatePortfolio(body: any, allowed: readonly string[] = SYMBOL
  if (settings.sellFeePct > 5) throw new Error('Biaya jual harus antara 0% dan 5%.')
  if (settings.slippagePct > 5) throw new Error('Slippage harus antara 0% dan 5%.')
  if (settings.maxPositions < 1 || settings.maxPositions > 20 || !Number.isInteger(settings.maxPositions)) throw new Error('Maksimal posisi harus bilangan bulat antara 1 dan 20.')
+ if(!Number.isInteger(settings.holdingSessions)||settings.holdingSessions!<3||settings.holdingSessions!>15)throw new Error('Lama pegang harus bilangan bulat antara 3 dan 15 sesi bursa.')
  const seen=new Set<string>()
  const holdings:Holding[]=body.holdings.map((h:any)=>{
   if(!h || !allowed.includes(h.symbol) || seen.has(h.symbol) || !Number.isInteger(h.shares) || h.shares<=0 || h.shares>1e9 || !Number.isFinite(h.entryPrice) || h.entryPrice<=0 || (h.stop!=null && (!Number.isFinite(h.stop)||h.stop<=0))) throw new Error('Posisi tidak valid. Gunakan saham universe, jumlah lembar positif, dan simbol unik.')
   if(h.openedDate!=null && (typeof h.openedDate!=='string' || !/^\d{4}-\d{2}-\d{2}$/.test(h.openedDate) || !Number.isFinite(Date.parse(h.openedDate)) || new Date(h.openedDate).toISOString().slice(0,10)!==h.openedDate)) throw new Error('Tanggal beli tidak valid.')
   if(h.target!=null && (!Number.isFinite(h.target)||h.target<=0)) throw new Error('Target posisi tidak valid.')
-  seen.add(h.symbol); return {symbol:h.symbol,shares:h.shares,entryPrice:h.entryPrice,...(h.stop!=null?{stop:h.stop}:{}),...(h.target!=null?{target:h.target}:{}),...(h.openedDate?{openedDate:h.openedDate}:{})}
+  if(h.holdingSessions!=null&&(!Number.isInteger(h.holdingSessions)||h.holdingSessions<3||h.holdingSessions>15))throw new Error('Lama pegang posisi harus 3–15 sesi.')
+  seen.add(h.symbol); return {symbol:h.symbol,shares:h.shares,entryPrice:h.entryPrice,...(h.stop!=null?{stop:h.stop}:{}),...(h.target!=null?{target:h.target}:{}),...(h.openedDate?{openedDate:h.openedDate}:{}),holdingSessions:h.holdingSessions??15}
  })
  return {settings,holdings}
 }

@@ -1,5 +1,6 @@
 import { buildPlans, defaultSettings, validateSettings, cleanHistory } from '../shared/engine';
 import type { Candle, Holding, Settings, TradePlan } from '../shared/types';
+import { calendarCoverage, holdingSchedule } from '../shared/calendar';
 
 export interface Trade {
   symbol: string; signalDate: string; entryDate: string; exitDate: string;
@@ -26,10 +27,11 @@ const round = (n: number) => Math.round(n * 100) / 100;
 export function runBacktest(histories: Record<string,Candle[]>, index: Candle[], startDate: string, endDate: string, options: BacktestOptions = {}): BacktestResult {
   const initialEquity = options.initialEquity ?? 10_000_000;
   const settings = {...defaultSettings, ...options.settings, cash: initialEquity, equity: initialEquity};
+  const maxAge = options.maxHoldingSessions ?? settings.holdingSessions ?? 15;
+  settings.holdingSessions = maxAge;
   validateSettings(settings);
-  const maxAge = options.maxHoldingSessions ?? 15;
   if (!Number.isFinite(initialEquity) || initialEquity <= 0 || !Number.isInteger(maxAge) || maxAge < 3 || maxAge > 15) throw new Error('Invalid backtest capital or holding horizon (3–15 sessions).');
-  const planner = options.planner ?? buildPlans;
+  const planner: Planner = options.planner ?? ((history,index,held,settings,date) => buildPlans(history,index,held,settings,date,calendarCoverage(date)?{}:{calendarMode:'observed'}));
   const series = Object.fromEntries(Object.entries(histories).map(([symbol,rows]) => [symbol, cleanHistory(rows,endDate)]));
   const dates = cleanHistory(index,endDate).filter(b => b.date >= startDate && b.date <= endDate);
   if (dates.length < 2) throw new Error('At least two index sessions are required.');
@@ -56,7 +58,9 @@ export function runBacktest(histories: Record<string,Candle[]>, index: Candle[],
     let reservedRisk=positions.reduce((n,p)=>n+Math.max(0,p.shares*(p.mark-Math.min(p.mark,p.stop)*(1-slip)*(1-sellFee))),0);
     // Existing-position exits occur before entries. Locked or absent candles cannot imply a fill.
     for (const p of [...positions]) {
-      p.age++;
+      // Known exchange sessions still elapse if the dataset is missing an index bar.
+      // Outside verified coverage, age follows observed index sessions explicitly.
+      p.age=holdingSchedule(p.entryDate,maxAge,date).heldSessions??p.age+1;
       const bar = bars[p.symbol]; if (!bar) continue;
       p.mark = bar.close;
       if (locked(bar)) continue;
@@ -94,7 +98,7 @@ export function runBacktest(histories: Record<string,Candle[]>, index: Candle[],
     const benchmarkEquity=benchmarkUnits*dates[session].close*(1-slip)*(1-sellFee);
     equityCurve.push({date,equity:round(equity),cash:round(cash),benchmarkEquity:round(benchmarkEquity)});
     const visible=Object.fromEntries(Object.entries(series).map(([symbol,rows])=>[symbol,rows.filter(b=>b.date<=date)]));
-    const held:Holding[]=positions.map(p=>({symbol:p.symbol,shares:p.shares,entryPrice:p.entry,stop:p.stop,target:p.target,openedDate:p.entryDate}));
+    const held:Holding[]=positions.map(p=>({symbol:p.symbol,shares:p.shares,entryPrice:p.entry,stop:p.stop,target:p.target,openedDate:p.entryDate,holdingSessions:maxAge}));
     // Pending orders expire after exactly one session. Final-session signals are never executed.
     const plans=session<dates.length-1 ? planner(visible,sorted(index).filter(b=>b.date<=date),held,{...settings,cash,equity},date) : [];
     pending=plans.filter(p=>p.action==='BUY').map(plan=>({plan,signalDate:date}));

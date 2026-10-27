@@ -1,7 +1,8 @@
 import type { Candle, Holding, Settings, Setup, TradePlan, UniverseAssessment } from './types'
+import { holdingSchedule,nextTradingSession,isTradingSession } from './calendar'
 export type { Candle, Holding, Settings, Setup, TradePlan, UniverseAssessment } from './types'
-export const STRATEGY_VERSION = 'swing-eod-1.1.0'
-export const defaultSettings: Settings = { cash: 10_000_000, equity: 10_000_000, riskPct: 0.5, maxPositionPct: 20, maxTotalRiskPct: 2, buyFeePct: 0.15, sellFeePct: 0.25, slippagePct: 0.1, minDailyValue: 1_000_000_000, maxPositions: 5 }
+export const STRATEGY_VERSION = 'swing-eod-1.2.0'
+export const defaultSettings: Settings = { cash: 10_000_000, equity: 10_000_000, riskPct: 0.5, maxPositionPct: 20, maxTotalRiskPct: 2, buyFeePct: 0.15, sellFeePct: 0.25, slippagePct: 0.1, minDailyValue: 1_000_000_000, maxPositions: 5,holdingSessions:15 }
 export const tickSize = (price: number): number => price < 200 ? 1 : price < 500 ? 2 : price < 2000 ? 5 : price < 5000 ? 10 : 25
 export function roundPrice(price: number, direction: 'up'|'down' = 'up'): number {
   if (!Number.isFinite(price) || price <= 0) return 0
@@ -14,7 +15,8 @@ const mean = (values: number[]) => values.reduce((a,b) => a+b,0) / values.length
 const cashRound = (n: number) => Math.round(n * 100) / 100
 const validDate = (date: string) => /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date)) && new Date(date).toISOString().slice(0,10) === date
 export function validateSettings(s: Settings): void {
-  for (const key of Object.keys(defaultSettings) as (keyof Settings)[]) if (!Number.isFinite(s[key]) || s[key] < 0) throw new Error(`Invalid setting: ${key}`)
+  for (const key of Object.keys(defaultSettings) as (keyof Settings)[]) {const value=key==='holdingSessions'?s[key]??15:s[key];if (!Number.isFinite(value) || value! < 0) throw new Error(`Invalid setting: ${key}`)}
+  if(!Number.isInteger(s.holdingSessions??15)||(s.holdingSessions??15)<3||(s.holdingSessions??15)>15)throw new Error('Holding horizon must be 3–15 sessions')
   if (s.cash > s.equity || s.maxPositions < 1 || !Number.isInteger(s.maxPositions)) throw new Error('Equity, cash or position count is invalid')
   for (const k of ['riskPct','maxPositionPct','maxTotalRiskPct','buyFeePct','sellFeePct','slippagePct'] as const) if (s[k] >= 100) throw new Error(`Invalid percentage: ${k}`)
 }
@@ -121,7 +123,8 @@ export function sizePosition(entry: number, stop: number, averageVolume: number,
   const lots = Math.max(0,Math.floor(shareCount/100))
   return {lots,estimatedCost:cashRound(lots*100*paid),plannedRisk:cashRound(lots*100*perShareRisk)}
 }
-export function buildPlans(histories: Record<string,Candle[]>, index: Candle[], holdings: Holding[], settings: Settings, expectedDate: string): TradePlan[] {
+/** Observed sessions are an explicit backtest assumption, never a live-calendar fallback. */
+export function buildPlans(histories: Record<string,Candle[]>, index: Candle[], holdings: Holding[], settings: Settings, expectedDate: string, context: {calendarMode?:'observed'} = {}): TradePlan[] {
   validateSettings(settings)
   // Equity is the user's total marked portfolio value, including available cash.
   // It is not inferred from entry prices; callers should update it before sizing.
@@ -130,6 +133,7 @@ export function buildPlans(histories: Record<string,Candle[]>, index: Candle[], 
     if (holdingMap.has(h.symbol) || !h.symbol || !Number.isFinite(h.shares) || !Number.isInteger(h.shares) || h.shares <= 0 || !Number.isFinite(h.entryPrice) || h.entryPrice<=0 || (h.stop!==undefined && (!Number.isFinite(h.stop)||h.stop<=0))) throw new Error('Invalid or duplicate holding')
     if (h.target !== undefined && (!Number.isFinite(h.target) || h.target <= 0)) throw new Error('Invalid holding target')
     if (h.openedDate !== undefined && !validDate(h.openedDate)) throw new Error('Invalid holding opening date')
+    if(h.holdingSessions!==undefined&&(!Number.isInteger(h.holdingSessions)||h.holdingSessions<3||h.holdingSessions>15))throw new Error('Invalid holding horizon')
     holdingMap.set(h.symbol,h)
   }
   let availableCash=settings.cash, availableRisk=settings.equity*settings.maxTotalRiskPct/100, slots=settings.maxPositions-holdings.length
@@ -156,21 +160,38 @@ export function buildPlans(histories: Record<string,Candle[]>, index: Candle[], 
   })
   let setupRank=0
   return candidates.map(({symbol,h,raw,assessment,setup,ranking})=>{
+    const horizon=h?h.holdingSessions??15:settings.holdingSessions??15
+    const historical=context.calendarMode==='observed'
+    const schedule=holdingSchedule(h?h.openedDate:(nextTradingSession(expectedDate)??undefined),horizon,expectedDate)
+    if(historical){
+      schedule.calendarStatus='historical-observed'
+      schedule.plannedExitDate=null
+      try{schedule.heldSessions=h?.openedDate?cleanHistory(index,expectedDate).filter(c=>c.date>=h.openedDate!).length:null}catch{schedule.heldSessions=null}
+    }else if(isTradingSession(expectedDate)!==true){
+      schedule.calendarStatus='unsupported'
+      schedule.heldSessions=null
+      schedule.plannedExitDate=null
+    }
+    if(!h&&schedule.calendarStatus==='missing-entry')schedule.calendarStatus='unsupported'
     const base: TradePlan={symbol,action:'WAIT',reasons:[...setup.reasons],entry:setup.entry,stop:setup.stop,target:setup.target,lots:0,estimatedCost:0,plannedRisk:0,asOf:setup.asOf,expiry:'NEXT_TRADING_SESSION_ONLY',strategyVersion:STRATEGY_VERSION,setup:setup.setup,
-      rank:ranking?++setupRank:null,score:ranking?.score??null,rankingReasons:ranking?.rankingReasons??[],avgDailyValue:assessment.avgDailyValue,historySessions:assessment.historySessions,eligible:assessment.eligible}
+      rank:ranking?++setupRank:null,score:ranking?.score??null,rankingReasons:ranking?.rankingReasons??[],avgDailyValue:assessment.avgDailyValue,historySessions:assessment.historySessions,eligible:assessment.eligible,...schedule}
     let rows: Candle[]=[]
     try {rows=cleanHistory(raw,expectedDate)} catch {return {...base,action:h?'HOLD':'WAIT',entry:h?h.entryPrice:base.entry,stop:h?h.stop??null:base.stop,target:h?h.target??null:base.target,lots:h?h.shares/100:0,reasons:['Data tidak valid; keputusan transaksi diblokir',...(h&&h.target===undefined?['Target belum diisi; exit target tidak dipantau']:[])]}}
     const last=rows.at(-1)
     if(h){
       base.action='HOLD';base.entry=h.entryPrice;base.stop=h.stop??null;base.target=h.target??null;base.lots=h.shares/100;base.estimatedCost=0;base.reasons=[]
       if(h.openedDate && h.openedDate>expectedDate){base.action='WAIT';base.reasons=['Posisi dibuka setelah sesi data terakhir; tunggu data sesi pembelian selesai'];return base}
+      if(schedule.calendarStatus==='invalid-entry'){base.action='WAIT';base.reasons=['Tanggal pembelian bukan sesi bursa yang valid; keputusan transaksi diblokir'];return base}
+      if(!historical&&isTradingSession(expectedDate)!==true){base.action='WAIT';base.reasons=['Kalender sesi observasi tidak tersedia atau bukan sesi bursa; keputusan transaksi diblokir'];return base}
       if(!last || last.date!==expectedDate || rows.length<60){base.reasons=['Data posisi belum lengkap; keputusan jual diblokir'];return base}
       let market: Candle[]=[]
       try {market=cleanHistory(index,expectedDate)} catch {base.reasons=['Data IHSG tidak valid; keputusan jual diblokir'];return base}
       const heldDates=new Set(rows.slice(-60).map(c=>c.date))
       if(market.length<60 || market.at(-1)?.date!==expectedDate || market.slice(-60).some(c=>!heldDates.has(c.date)) || last.volume===0){base.reasons=['Sesi posisi/IHSG tidak lengkap atau tidak ada volume; keputusan jual diblokir'];return base}
-      // Opening date is held session one. After session fourteen closes, exit at session fifteen open.
-      const heldSessions=h.openedDate?rows.filter(c=>c.date>=h.openedDate!).length:0
+      // Live schedules use the verified calendar, not truncated price history. Historical
+      // evaluation before calendar coverage retains observed-session counting only.
+      const heldSessions=schedule.heldSessions??0
+      base.heldSessions=schedule.heldSessions
       if(h.stop!==undefined && last.low<=h.stop){
         base.action='SELL';base.reasons.push('Harga menyentuh stop posisi; verifikasi fill atau exit sesi berikutnya')
         if(h.target!==undefined && last.high>=h.target)base.reasons.push('Stop dan target tersentuh dalam sesi yang sama; urutan intraday tidak diketahui, prioritaskan tinjauan stop')
@@ -178,7 +199,9 @@ export function buildPlans(histories: Record<string,Candle[]>, index: Candle[], 
         base.action='SELL';base.reasons.push('Harga menyentuh target posisi; tinjau eksekusi atau rencana exit sesi berikutnya, fill belum terkonfirmasi')
       }
       if(last.close<mean(rows.slice(-20).map(c=>c.close))){base.action='SELL';base.reasons.push('Penutupan di bawah SMA20')}
-      if(heldSessions>=14){base.action='SELL';base.reasons.push('14 sesi telah selesai; rencana exit pada pembukaan sesi ke-15 (atau segera jika terlambat)')}
+      if(heldSessions>=horizon-1){base.action='SELL';base.reasons.push(`${horizon-1} sesi telah selesai; rencana exit pada pembukaan sesi ke-${horizon}${schedule.plannedExitDate?' ('+schedule.plannedExitDate+')':''} (atau segera jika terlambat)`)}
+      if(schedule.calendarStatus==='unsupported')base.reasons.push('Kalender belum mencakup seluruh periode; tanggal dan pemicu exit waktu tidak tersedia. Periksa posisi secara manual.')
+      if(schedule.calendarStatus==='missing-entry')base.reasons.push('Tanggal pembelian belum diisi; exit waktu tidak dapat dipantau.')
       if(!base.reasons.length)base.reasons.push('Belum ada kondisi exit pada penutupan')
       if(h.target===undefined)base.reasons.push('Target belum diisi; exit target tidak dipantau')
       if(h.stop===undefined)base.reasons.push('Stop belum diisi; seluruh nilai posisi dicadangkan sebagai risiko')
@@ -187,6 +210,7 @@ export function buildPlans(histories: Record<string,Candle[]>, index: Candle[], 
     // Report universe admission separately, even when the market regime also blocks entry.
     if(!assessment.eligible){base.reasons=[...assessment.reasons,...setup.reasons];return base}
     if(setup.action!=='BUY')return base
+    if(!historical&&schedule.calendarStatus!=='verified'){base.reasons=['Kalender belum mencakup periode masuk sampai exit; entry diblokir'];return base}
     if(slots<=0){base.reasons=['Batas jumlah posisi tercapai'];return base}
     const sized=sizePosition(setup.entry!,setup.stop!,mean(rows.slice(-20).map(c=>c.volume)),settings,availableCash,availableRisk)
     if(!sized.lots){base.reasons=['Kas, batas posisi, atau anggaran risiko tidak cukup untuk satu lot'];return base}

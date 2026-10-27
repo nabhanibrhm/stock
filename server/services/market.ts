@@ -4,13 +4,13 @@ import type { Candle, Holding, Settings } from '../../shared/types'
 import { readRecord, writeRecord, reserveRefresh } from './store'
 import { SYMBOLS, validateCandles } from './validation'
 import { discoverUniverse, selectUniverse, SCAN_LIMIT, SCAN_REQUEST_RESERVATION, SCAN_VERSION, type Catalog } from './universe'
+import { expectedCompletedSession,CALENDAR_COVERAGE } from '../../shared/calendar'
 export interface ScanInfo {discovered:number;providerTotal:number;selected:number;scanned:number;failed:string[];limit:number;source:string;asOf:string;coverage:string;catalogComplete:boolean}
 export interface Market {histories:Record<string,Candle[]>;index:Candle[];fetchedAt:string;origin:string;scan?:ScanInfo;catalog?:Catalog;scanVersion?:string}
 export function expectedSession(now = new Date()): string {
- const wib = new Date(now.getTime()+7*3600000)
- if (wib.getUTCHours()<18) wib.setUTCDate(wib.getUTCDate()-1)
- while([0,6].includes(wib.getUTCDay())) wib.setUTCDate(wib.getUTCDate()-1)
- return wib.toISOString().slice(0,10)
+ const expected=expectedCompletedSession(now)
+ if(!expected)throw new Error('Kalender bursa belum tersedia untuk tanggal ini. Perbarui kalender sebelum mengambil data atau membuat keputusan transaksi.')
+ return expected
 }
 export async function marketData():Promise<Market> {
  const cached=await readRecord<Market>('market'); if(cached) return cached
@@ -31,15 +31,16 @@ export async function allowedSymbols(){
 }
 export async function dashboard(portfolio?:{settings:Settings;holdings:Holding[]}) {
  const market=await marketData()
- const saved=portfolio || await readRecord<{settings:Settings;holdings:Holding[]}>('portfolio') || {settings:{...defaultSettings},holdings:[]}
+ const rawSaved=portfolio || await readRecord<{settings:Settings;holdings:Holding[]}>('portfolio') || {settings:{...defaultSettings},holdings:[]}
+ const saved={...rawSaved,settings:{...defaultSettings,...rawSaved.settings}}
  const asOf=market.index.at(-1)?.date || ''
- const expected=expectedSession()
+ const expected=expectedCompletedSession()
  let backtest=await readRecord<any>('backtest')
  if(!backtest && !process.env.VERCEL){try{backtest=JSON.parse(await readFile('data/backtest-report.json','utf8'))}catch{}}
- const plans=buildPlans(market.histories,market.index,saved.holdings,saved.settings,expected)
+ const plans=expected?buildPlans(market.histories,market.index,saved.holdings,saved.settings,expected):[]
  const scan=market.scan || {discovered:Object.keys(market.histories).length,providerTotal:Object.keys(market.histories).length,selected:Object.keys(market.histories).length,scanned:Object.keys(market.histories).length,failed:[],limit:SCAN_LIMIT,source:'Cache pilot; perbarui untuk pemindaian luas',asOf,coverage:'Cache lama, belum pemindaian luas',catalogComplete:false}
  const {catalog,...publicMarket}=market
- return {...publicMarket,...saved,symbols:[...new Set([...Object.keys(market.histories),...saved.holdings.map(h=>h.symbol)])].sort(),universe:{...scan,eligible:plans.filter(p=>p.eligible).length,qualified:plans.filter(p=>p.rank!=null).length},source:{asOf,fetchedAt:market.fetchedAt,status:asOf===expected?'cached':'stale',message:`Arjum · ${market.origin}. Sesi diharapkan: ${expected}. Cakupan terbatas ${scan.selected} saham; bukan seluruh bursa. Kalender hari kerja; aksi korporasi belum terverifikasi.`},plans,backtest}
+ return {...publicMarket,...saved,symbols:[...new Set([...Object.keys(market.histories),...saved.holdings.map(h=>h.symbol)])].sort(),universe:{...scan,eligible:plans.filter(p=>p.eligible).length,qualified:plans.filter(p=>p.rank!=null).length},source:{asOf,fetchedAt:market.fetchedAt,status:asOf===expected?'cached':'stale',expectedSession:expected,calendarStatus:expected?'verified':'unsupported',calendarCoverage:CALENDAR_COVERAGE,message:`Arjum · ${market.origin}. Sesi diharapkan: ${expected??'kalender tidak tersedia; rencana transaksi diblokir'}. Cakupan terbatas ${scan.selected} saham; bukan seluruh bursa. Kalender BEI 2026; aksi korporasi belum terverifikasi.`},plans,backtest}
 }
 let activeRefresh:Promise<Awaited<ReturnType<typeof dashboard>>>|undefined
 export async function refreshMarket(){

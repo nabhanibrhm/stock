@@ -30,14 +30,17 @@ The backtest reads the validation snapshots already saved in `docs/arjum-samples
 - Saved capital/risk settings and holdings persist in SQLite. Capital is available cash; equity includes cash and marked positions, entered by the user.
 - BUY is a conditional next-session stop-entry, not an instruction to buy immediately. Skip opening gaps over 3%; recalculate position size for actual fills. Orders expire after one session.
 - Positions are rounded down to 100-share lots, with fee/slippage allowances, liquidity participation, cash, position and aggregate risk limits. Missing stops reserve full held value as risk.
-- Stops/trend exits may occur earlier than three sessions. Time exit targets the 15th held session's open when an opening date is supplied.
+- Stops/trend exits may occur earlier than three sessions. New positions use a configurable 3–15-session horizon; the purchase session counts as day 1 and the time exit targets session N's open. Existing positions without a saved horizon retain 15 sessions. Adding shares or selling part of a position preserves its original schedule.
+- Manual AI review provides Deep Research, Starting Plan and Daily Check-in prompts from saved data, with preview and copy. Portfolio sharing is opt-in; no AI key or automated AI request is required. See [manual AI workflow and test checklist](docs/manual-ai-workflow.md).
 - All signal logic is deterministic, versioned and shared with the backtester. Qualifying setups are ranked before capital allocation using relative strength, relative volume and trend distance. Scores are uncalibrated ordering heuristics, not win probabilities; ties use alphabetical order.
 
 ## Research limitations
 
 Current sample checks are not full market-data certification. Corporate-action methodology, dividend treatment, historical price limits and historical universe membership are unverified. Backtests are explicitly exploratory and do not demonstrate profitability. The fixed four-stock universe has selection/survivorship bias. No parameter tuning was performed against holdout results.
 
-Signals require the expected completed weekday session at/after 18:00 WIB; before then they require the preceding weekday. Exchange holidays are not yet integrated, so holiday dates conservatively block signals. Missing and stale records block trade decisions. Zero-volume or locked candles cannot be assumed executable in simulation. A stop is not a guaranteed maximum loss.
+Signals require the expected completed exchange session at/after 18:00 WIB; before then they require the preceding session. The exchange calendar currently covers 2026, including listed holidays; unsupported calendar coverage blocks live decisions rather than guessing dates. Missing and stale records block trade decisions. Zero-volume or locked candles cannot be assumed executable in simulation. A stop is not a guaranteed maximum loss.
+
+Backtests outside verified calendar coverage explicitly count observed IHSG sessions. Missing historical sessions can therefore affect elapsed holding periods; no future calendar date is inferred in this mode. Within verified coverage, known sessions count even when a data bar is missing, but a simulated fill still requires an executable stock bar.
 
 Global/yield data, news catalysts, full exchange breadth and scheduled briefs are future phases. An actual-fill journal, in-app exit monitoring, and on-demand broker/financial research are now available; see [holdings and research](docs/holdings-and-research.md). No fabricated data is displayed for unavailable sections.
 

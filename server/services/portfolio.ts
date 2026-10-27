@@ -2,7 +2,7 @@ import type { Holding, Settings } from '../../shared/types'
 import { db, initStore, withStoreWrite } from './store'
 
 type Portfolio = {settings:Settings;holdings:Holding[]}
-const positionIdentity=(holdings:Holding[])=>JSON.stringify(holdings.map(({symbol,shares,entryPrice,openedDate})=>({symbol,shares,entryPrice,openedDate:openedDate??null})).sort((a,b)=>a.symbol.localeCompare(b.symbol)))
+const positionIdentity=(holdings:Holding[])=>JSON.stringify(holdings.map(({symbol,shares,entryPrice,openedDate,holdingSessions})=>({symbol,shares,entryPrice,openedDate:openedDate??null,holdingSessions:holdingSessions??15})).sort((a,b)=>a.symbol.localeCompare(b.symbol)))
 
 /** A stale settings form must never overwrite a committed fill. */
 export async function savePortfolio(portfolio:Portfolio) {

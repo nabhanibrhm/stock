@@ -2,9 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {assessHistoryEligibility,assessUniverse,buildPlans,cleanHistory,defaultSettings,evaluateSetup,rankSetup,roundPrice,sizePosition,STRATEGY_VERSION} from '../shared/engine'
 import type {Candle,Settings} from '../shared/types'
+import {isTradingSession} from '../shared/calendar'
 function candles(): Candle[]{
- const result:Candle[]=[]; const d=new Date('2025-01-01T00:00:00Z')
- while(result.length<80){if(d.getUTCDay()!==0&&d.getUTCDay()!==6){const close=1000+result.length*5;result.push({date:d.toISOString().slice(0,10),open:close-2,high:close+3,low:close-5,close,volume:2_000_000,value:close*2_000_000})}d.setUTCDate(d.getUTCDate()+1)}
+ const result:Candle[]=[]; const d=new Date('2026-01-01T00:00:00Z')
+ while(result.length<80){if(isTradingSession(d.toISOString().slice(0,10))){const close=1000+result.length*5;result.push({date:d.toISOString().slice(0,10),open:close-2,high:close+3,low:close-5,close,volume:2_000_000,value:close*2_000_000})}d.setUTCDate(d.getUTCDate()+1)}
  result.at(-1)!.close+=30;result.at(-1)!.high=result.at(-1)!.close+5
  return result
 }
@@ -142,7 +143,7 @@ test('higher-ranked qualifying setup receives scarce position capacity before al
  assert.equal(plans[1]!.rank,2)
  assert.ok(plans[0]!.score!>plans[1]!.score!)
  assert.ok(plans[0]!.rankingReasons!.some(r=>r.includes('bukan probabilitas')))
- assert.equal(plans[0]!.strategyVersion,'swing-eod-1.1.0')
+ assert.equal(plans[0]!.strategyVersion,'swing-eod-1.2.0')
 })
 test('equal scores tie by symbol independently of input insertion order',()=>{
  const plans=buildPlans({ZZZZ:rows,AAAA:rows},rows,[],{...settings,maxPositions:1},date)
@@ -186,11 +187,47 @@ test('eligibility metrics and ranking use only observations available on the spe
  const estimated=assessHistoryEligibility(rows.map(({value,...r})=>r),rows,0,date)
  assert.equal(estimated.valueEstimated,true)
  assert.ok(estimated.avgDailyValue!>0)
- assert.equal(STRATEGY_VERSION,'swing-eod-1.1.0')
+ assert.equal(STRATEGY_VERSION,'swing-eod-1.2.0')
 })
 test('a newly recorded fill after the last completed session waits for its own session data',()=>{
  const h={symbol:'AAAA',shares:100,entryPrice:1000,stop:990,openedDate:'2099-01-01'}
  const plan=buildPlans({AAAA:rows},rows,[h],settings,date)[0]!
  assert.equal(plan.action,'WAIT')
  assert.ok(plan.reasons.some(r=>r.includes('setelah sesi data terakhir')))
+})
+
+test('configured horizons use inclusive sessions while legacy holdings keep fifteen sessions',()=>{
+ const base={symbol:'AAAA',shares:100,entryPrice:1000,stop:1000}
+ const day8=buildPlans({AAAA:rows},rows,[{...base,holdingSessions:10,openedDate:rows.at(-8)!.date}],{...settings,holdingSessions:3},date)[0]!
+ const day9=buildPlans({AAAA:rows},rows,[{...base,holdingSessions:10,openedDate:rows.at(-9)!.date}],{...settings,holdingSessions:3},date)[0]!
+ assert.equal(day8.action,'HOLD');assert.equal(day8.heldSessions,8)
+ assert.equal(day9.action,'SELL');assert.equal(day9.heldSessions,9)
+ assert.ok(day9.reasons.some(r=>r.includes('pembukaan sesi ke-10')))
+ const legacy=buildPlans({AAAA:rows},rows,[{...base,openedDate:rows.at(-9)!.date}],{...settings,holdingSessions:3},date)[0]!
+ assert.equal(legacy.action,'HOLD');assert.equal(legacy.holdingSessions,15)
+ const candidate=buildPlans({AAAA:rows},rows,[],{...settings,holdingSessions:10},date)[0]!
+ assert.equal(candidate.action,'BUY');assert.equal(candidate.holdingSessions,10)
+ assert.equal(candidate.heldSessions,0);assert.ok(candidate.plannedExitDate!>date)
+})
+
+test('live plans block unsupported dates; observed-session historical backtests require explicit opt in',()=>{
+ const historic=rows.map((r,i)=>({...r,date:new Date(Date.UTC(2025,0,i+1)).toISOString().slice(0,10)}))
+ const end=historic.at(-1)!.date
+ const live=buildPlans({AAAA:historic},historic,[],settings,end)[0]!
+ assert.equal(live.action,'WAIT');assert.equal(live.calendarStatus,'unsupported')
+ const observed=buildPlans({AAAA:historic},historic,[],settings,end,{calendarMode:'observed'})[0]!
+ assert.equal(observed.action,'BUY');assert.equal(observed.calendarStatus,'historical-observed');assert.equal(observed.plannedExitDate,null)
+ const h={symbol:'AAAA',shares:100,entryPrice:1000,stop:1000,holdingSessions:10,openedDate:historic.at(-9)!.date}
+ const historicalExit=buildPlans({AAAA:historic},historic,[h],settings,end,{calendarMode:'observed'})[0]!
+ assert.equal(historicalExit.action,'SELL');assert.equal(historicalExit.heldSessions,9)
+})
+
+test('unsupported entry deadlines block new allocation and invalid horizons are rejected',()=>{
+ const endRows=rows.map((r,i)=>({...r,date:new Date(Date.UTC(2026,9,6+i)).toISOString().slice(0,10)}))
+ const last=endRows.at(-1)!.date
+ assert.equal(buildPlans({AAAA:endRows},endRows,[],{...settings,holdingSessions:15},last)[0]!.action,'WAIT')
+ for(const holdingSessions of [2,16,3.5,NaN]){
+  assert.throws(()=>buildPlans({},rows,[],{...settings,holdingSessions},date),/horizon|setting/i)
+  assert.throws(()=>buildPlans({},rows,[{symbol:'AAAA',shares:100,entryPrice:1000,holdingSessions}],settings,date),/horizon/)
+ }
 })

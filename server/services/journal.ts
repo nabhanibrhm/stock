@@ -1,7 +1,8 @@
 import { buildPlans, defaultSettings } from '../../shared/engine'
 import { applyTrade, mergeExitAlerts, monitorPositions, validateTrade, type ExitAlert, type JournalState, type Portfolio } from '../../shared/journal'
 import { db, initStore, withStoreWrite } from './store'
-import { allowedSymbols, expectedSession, marketData } from './market'
+import { allowedSymbols, marketData } from './market'
+import { expectedCompletedSession } from '../../shared/calendar'
 
 const blank=():JournalState=>({trades:[],basis:{}})
 const defaultPortfolio=():Portfolio=>({settings:{...defaultSettings},holdings:[]})
@@ -14,18 +15,19 @@ async function put(tx:Reader,key:string,value:unknown){
  await tx.execute({sql:'INSERT INTO records(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',args:[key,JSON.stringify(value)]})
 }
 export async function getJournal(){
- const market=await marketData(),expected=expectedSession()
+ const market=await marketData(),expected=expectedCompletedSession()
  await initStore()
  return withStoreWrite(()=>readJournal(market,expected))
 }
-async function readJournal(market:Awaited<ReturnType<typeof marketData>>,expected:string){
+async function readJournal(market:Awaited<ReturnType<typeof marketData>>,expected:string|null){
  await initStore();const tx=await db().transaction('write')
  try{
   const portfolio=await read<Portfolio>(tx,'portfolio')??defaultPortfolio()
+  portfolio.settings={...defaultSettings,...portfolio.settings}
   const state=await read<JournalState>(tx,'journal')??blank()
   const existing=await read<ExitAlert[]>(tx,'exit-alerts')??[]
-  const plans=buildPlans(market.histories,market.index,portfolio.holdings,portfolio.settings,expected)
-  const monitoring=monitorPositions(portfolio.holdings,plans,market.histories,portfolio.settings,expected)
+  const plans=expected?buildPlans(market.histories,market.index,portfolio.holdings,portfolio.settings,expected):[]
+  const monitoring=monitorPositions(portfolio.holdings,plans,market.histories,portfolio.settings,expected??new Date(Date.now()+7*3600000).toISOString().slice(0,10))
   const alerts=mergeExitAlerts(existing,monitoring,new Date().toISOString())
   if(alerts.length!==existing.length)await put(tx,'exit-alerts',alerts)
   await tx.commit()

@@ -85,3 +85,28 @@ test('exposure includes same-session round trips and sessions with opening exits
  assert.equal(overnight.exposurePct,66.67);
 });
 
+test('configured ten-session horizon is shared by planner and actual time exit',()=>{
+ const dates=['2026-10-02','2026-10-05','2026-10-06','2026-10-07','2026-10-08','2026-10-09','2026-10-12','2026-10-13','2026-10-14','2026-10-15','2026-10-16'];
+ const bars=dates.map(d=>candle(d));let n=0;
+ const result=runBacktest({TEST:bars},bars,dates[0]!,dates.at(-1)!,{...options,settings:{...options.settings,holdingSessions:10},planner:(history,index,held,settings)=>{
+  assert.equal(settings.holdingSessions,10);
+  for(const holding of held)assert.equal(holding.holdingSessions,10);
+  return ++n===1?[plan]:[];
+ }});
+ assert.equal(result.trades[0]!.entryDate,'2026-10-05');
+ assert.equal(result.trades[0]!.exitDate,'2026-10-16');
+ assert.equal(result.trades[0]!.holdingSessions,10);
+ assert.equal(result.trades[0]!.reason,'time-exit');
+});
+
+test('time exits count known exchange sessions across holidays and missing index observations',()=>{
+ const dates=['2026-08-13','2026-08-14','2026-08-18','2026-08-19'];
+ const bars=dates.map(d=>candle(d));let n=0;
+ const result=runBacktest({TEST:bars},bars,dates[0]!,dates.at(-1)!,{...options,maxHoldingSessions:3,planner:()=>++n===1?[plan]:[]});
+ assert.equal(result.trades[0]!.entryDate,'2026-08-14');assert.equal(result.trades[0]!.exitDate,'2026-08-19')
+ assert.equal(result.trades[0]!.holdingSessions,3);assert.equal(result.trades[0]!.reason,'time-exit')
+ const gaps=[candle('2026-10-02'),candle('2026-10-05'),candle('2026-10-08')];n=0
+ const delayed=runBacktest({TEST:gaps},gaps,gaps[0]!.date,gaps.at(-1)!.date,{...options,maxHoldingSessions:3,planner:()=>++n===1?[plan]:[]});
+ assert.equal(delayed.trades[0]!.exitDate,'2026-10-08');assert.equal(delayed.trades[0]!.holdingSessions,4)
+})
+
